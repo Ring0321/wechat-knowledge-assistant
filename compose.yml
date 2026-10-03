@@ -1,0 +1,231 @@
+name: wechat-knowledge
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16-bookworm}
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-pkb}
+      POSTGRES_USER: ${POSTGRES_USER:-pkb_owner}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?Set APP_DB_PASSWORD}
+      CONNECTOR_DB_PASSWORD: ${CONNECTOR_DB_PASSWORD:?Set CONNECTOR_DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/init-app-role.sh:/docker-entrypoint-initdb.d/10-app-role.sh:ro
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+  redis:
+    image: ${REDIS_IMAGE:-redis:7.4-bookworm}
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
+    command: [sh, -c, 'exec redis-server --appendonly yes --appendfsync everysec --requirepass "$$REDIS_PASSWORD" --maxmemory-policy noeviction']
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: [CMD-SHELL, 'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping | grep -q PONG']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+  migrate:
+    build:
+      context: .
+      target: production
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12-slim-bookworm}
+    environment:
+      DATABASE_ADMIN_URL: postgresql+asyncpg://${POSTGRES_USER:-pkb_owner}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-pkb}
+    command: [alembic, upgrade, head]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+  api:
+    build:
+      context: .
+      target: production
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12-slim-bookworm}
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: postgresql+asyncpg://pkb_app:${APP_DB_PASSWORD:?Set APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-pkb}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@redis:6379/0
+      WECOM_ALLOWED_USER_IDS: ${WECOM_ALLOWED_USER_IDS:-[]}
+      WECOM_ENABLED: ${WECOM_ENABLED:-false}
+      WECOM_CORP_ID: ${WECOM_CORP_ID:-}
+      WECOM_SECRET: ${WECOM_SECRET:-}
+      WECOM_CALLBACK_TOKEN: ${WECOM_CALLBACK_TOKEN:-}
+      WECOM_ENCODING_AES_KEY: ${WECOM_ENCODING_AES_KEY:-}
+      WECOM_OPEN_KFIDS: ${WECOM_OPEN_KFIDS:-[]}
+      WECOM_CALLBACK_BUDGET_SECONDS: ${WECOM_CALLBACK_BUDGET_SECONDS:-3}
+      WECOM_MAX_CALLBACK_BYTES: ${WECOM_MAX_CALLBACK_BYTES:-65536}
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=5)"]
+      interval: 5s
+      timeout: 6s
+      retries: 12
+      start_period: 5s
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+  worker: &worker_defaults
+    profiles: [wecom, ingestion]
+    init: true
+    # Covers the supported 600-second ingestion/Agent task budget plus shutdown margin.
+    stop_grace_period: 650s
+    build:
+      context: .
+      target: production
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12-slim-bookworm}
+    environment: &worker_environment
+      APP_ENV: ${APP_ENV:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: postgresql+asyncpg://pkb_app:${APP_DB_PASSWORD:?Set APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-pkb}
+      CONNECTOR_DATABASE_URL: postgresql+asyncpg://pkb_connector:${CONNECTOR_DB_PASSWORD:?Set CONNECTOR_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-pkb}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@redis:6379/0
+      WECOM_ENABLED: ${WECOM_ENABLED:-false}
+      WECOM_CORP_ID: ${WECOM_CORP_ID:-}
+      WECOM_SECRET: ${WECOM_SECRET:-}
+      WECOM_CALLBACK_TOKEN: ${WECOM_CALLBACK_TOKEN:-}
+      WECOM_ENCODING_AES_KEY: ${WECOM_ENCODING_AES_KEY:-}
+      WECOM_OPEN_KFIDS: ${WECOM_OPEN_KFIDS:-[]}
+      WECOM_ALLOWED_USER_IDS: ${WECOM_ALLOWED_USER_IDS:-[]}
+      WECOM_AUTO_REPLY: ${WECOM_AUTO_REPLY:-true}
+      WECOM_REPLY_TEXT: ${WECOM_REPLY_TEXT:-收到，微信客服连接已就绪。资料整理和知识库问答功能尚未启用。}
+      WECOM_HTTP_TIMEOUT_SECONDS: ${WECOM_HTTP_TIMEOUT_SECONDS:-8}
+      WECOM_POLL_INTERVAL_SECONDS: ${WECOM_POLL_INTERVAL_SECONDS:-60}
+      WECOM_RETRY_BASE_SECONDS: ${WECOM_RETRY_BASE_SECONDS:-5}
+      WECOM_MAX_ATTEMPTS: ${WECOM_MAX_ATTEMPTS:-5}
+      WECOM_MAX_PAGES_PER_SYNC: ${WECOM_MAX_PAGES_PER_SYNC:-100}
+      INGESTION_ENABLED: ${INGESTION_ENABLED:-false}
+      INGESTION_MAX_FILE_BYTES: ${INGESTION_MAX_FILE_BYTES:-20971520}
+      INGESTION_MAX_TEXT_BYTES: ${INGESTION_MAX_TEXT_BYTES:-2097152}
+      INGESTION_MAX_URLS: ${INGESTION_MAX_URLS:-10}
+      INGESTION_JOB_TIMEOUT_SECONDS: ${INGESTION_JOB_TIMEOUT_SECONDS:-90}
+      INGESTION_LEASE_SECONDS: ${INGESTION_LEASE_SECONDS:-120}
+      INGESTION_MAX_ATTEMPTS: ${INGESTION_MAX_ATTEMPTS:-3}
+      AGENT_ENABLED: ${AGENT_ENABLED:-false}
+      OPENAI_AGENT_MODEL: ${OPENAI_AGENT_MODEL:-}
+      AGENT_MAX_ATTEMPTS: ${AGENT_MAX_ATTEMPTS:-3}
+      AGENT_JOB_TIMEOUT_SECONDS: ${AGENT_JOB_TIMEOUT_SECONDS:-120}
+      AGENT_LEASE_SECONDS: ${AGENT_LEASE_SECONDS:-150}
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
+      S3_BUCKET: ${S3_BUCKET:-}
+      S3_REGION: ${S3_REGION:-us-east-1}
+    command: [python, -m, app.workers.wecom]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, python, -m, app.workers.wecom, --health]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    read_only: true
+    tmpfs: ["/tmp:rw,size=268435456"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+  ingestion-worker:
+    extends:
+      service: worker
+    profiles: [ingestion]
+    environment:
+      PARSING_ENABLED: ${PARSING_ENABLED:-false}
+      BROWSER_WS_URL: ws://browser:3000/
+      PARSER_TIMEOUT_SECONDS: ${PARSER_TIMEOUT_SECONDS:-45}
+      PARSER_MAX_TEXT_CHARS: ${PARSER_MAX_TEXT_CHARS:-500000}
+      PARSER_MAX_PAGES: ${PARSER_MAX_PAGES:-100}
+      PARSER_MAX_CELLS: ${PARSER_MAX_CELLS:-50000}
+      OCR_LANGUAGES: ${OCR_LANGUAGES:-chi_sim+eng}
+      MEDIA_PARSING_ENABLED: ${MEDIA_PARSING_ENABLED:-false}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_VISION_MODEL: ${OPENAI_VISION_MODEL:-}
+      MEDIA_TIMEOUT_SECONDS: ${MEDIA_TIMEOUT_SECONDS:-240}
+      MEDIA_MAX_DURATION_SECONDS: ${MEDIA_MAX_DURATION_SECONDS:-900}
+      MEDIA_CHUNK_SECONDS: ${MEDIA_CHUNK_SECONDS:-300}
+      MEDIA_MAX_FRAMES: ${MEDIA_MAX_FRAMES:-12}
+      MEDIA_FRAME_INTERVAL_SECONDS: ${MEDIA_FRAME_INTERVAL_SECONDS:-30}
+      MEDIA_SCENE_THRESHOLD: ${MEDIA_SCENE_THRESHOLD:-0.3}
+      KNOWLEDGE_ENABLED: ${KNOWLEDGE_ENABLED:-false}
+      KNOWLEDGE_HTTP_TIMEOUT_SECONDS: ${KNOWLEDGE_HTTP_TIMEOUT_SECONDS:-20}
+      KNOWLEDGE_MAX_DOCUMENT_BYTES: ${KNOWLEDGE_MAX_DOCUMENT_BYTES:-8388608}
+      KNOWLEDGE_POLL_SECONDS: ${KNOWLEDGE_POLL_SECONDS:-10}
+      KNOWLEDGE_INDEX_TIMEOUT_SECONDS: ${KNOWLEDGE_INDEX_TIMEOUT_SECONDS:-3600}
+    init: true
+    mem_limit: 2g
+    cpus: 2
+    pids_limit: 128
+    networks: [default, browser_net]
+    depends_on:
+      browser:
+        condition: service_started
+    command: [python, -m, app.workers.ingestion]
+    healthcheck:
+      test: [CMD, python, -m, app.workers.ingestion, --health]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+  agent-worker:
+    <<: *worker_defaults
+    profiles: [agent]
+    environment:
+      <<: *worker_environment
+      KNOWLEDGE_ENABLED: ${KNOWLEDGE_ENABLED:-false}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      KNOWLEDGE_HTTP_TIMEOUT_SECONDS: ${KNOWLEDGE_HTTP_TIMEOUT_SECONDS:-20}
+      AGENT_HTTP_TIMEOUT_SECONDS: ${AGENT_HTTP_TIMEOUT_SECONDS:-30}
+      AGENT_MAX_TURNS: ${AGENT_MAX_TURNS:-6}
+      AGENT_MAX_OUTPUT_TOKENS: ${AGENT_MAX_OUTPUT_TOKENS:-2000}
+    command: [python, -m, app.workers.agent]
+    healthcheck:
+      test: [CMD, python, -m, app.workers.agent, --health]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+  browser:
+    profiles: [ingestion]
+    build:
+      context: .
+      target: browser
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12-slim-bookworm}
+    networks: [browser_net]
+    init: true
+    read_only: true
+    tmpfs: ["/tmp:rw,size=268435456"]
+    shm_size: 256mb
+    mem_limit: 1g
+    cpus: 1
+    pids_limit: 128
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+networks:
+  browser_net:
+    internal: true
+volumes:
+  postgres_data:
+  redis_data:

@@ -1,0 +1,16 @@
+*
+!app/
+!app/**
+!migrations/
+!migrations/**
+!tests/
+!tests/**
+!scripts/
+!scripts/**
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE
+!alembic.ini
+**/__pycache__/
+**/*.pyc

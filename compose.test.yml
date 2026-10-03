@@ -1,0 +1,30 @@
+# Overlay: invoked only by scripts/verify.py with a unique project and temporary passwords.
+services:
+  s3:
+    # Disposable real S3-compatible test server, not a production storage recommendation.
+    image: chrislusf/seaweedfs@sha256:ce9e796f1fe6f06968f4c04bdaf8f678dad9c8acdfef3d244133d71bfa6bf882
+    environment:
+      AWS_ACCESS_KEY_ID: ${TEST_S3_ACCESS_KEY:?Temporary test credential required}
+      AWS_SECRET_ACCESS_KEY: ${TEST_S3_SECRET_KEY:?Temporary test credential required}
+    # Each test bucket and the system collection need their own volume allocation.
+    command: [server, -dir=/data, -s3, -ip=s3, -ip.bind=0.0.0.0, -master.telemetry=false, -master.volumeSizeLimitMB=8, -volume.max=64, -volume.minFreeSpace=0, -s3.port.iceberg=0, -s3.port.lance=0, -s3.autoCreateBucket=false]
+    tmpfs: ["/data:rw,size=536870912"]
+  tests:
+    profiles: [test]
+    build:
+      context: .
+      target: test
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12-slim-bookworm}
+    environment:
+      TEST_DATABASE_ADMIN_URL: postgresql+asyncpg://${POSTGRES_USER:-pkb_owner}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:?Use a _test database}
+      TEST_DATABASE_URL: postgresql+asyncpg://pkb_app:${APP_DB_PASSWORD:?Set APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:?Use a _test database}
+      TEST_CONNECTOR_DATABASE_URL: postgresql+asyncpg://pkb_connector:${CONNECTOR_DB_PASSWORD:?Set CONNECTOR_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:?Use a _test database}
+      TEST_REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@redis:6379/15
+      TEST_API_URL: http://api:8000
+      TEST_S3_ENDPOINT: http://s3:8333
+      TEST_S3_ACCESS_KEY: ${TEST_S3_ACCESS_KEY:?Temporary test credential required}
+      TEST_S3_SECRET_KEY: ${TEST_S3_SECRET_KEY:?Temporary test credential required}
+      TEST_BROWSER_WS_URL: ws://browser:3000/
+    networks: [default, browser_net]
+    command: [python, -m, pytest, tests/integration, -v]

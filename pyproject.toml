@@ -1,0 +1,81 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "wechat-knowledge-assistant"
+version = "0.100.1"
+description = "Tenant-isolated WeCom knowledge assistant foundation"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.34,<1",
+  "sqlalchemy[asyncio]>=2.0.38,<2.1",
+  "alembic>=1.14,<2",
+  "asyncpg>=0.30,<1",
+  "redis>=5.2,<7",
+  "pydantic-settings>=2.7,<3",
+  "httpx>=0.28,<1",
+  "cryptography>=44,<49",
+  "defusedxml>=0.7,<1",
+  "boto3>=1.40,<2",
+  "pypdf>=6,<7",
+  "pypdfium2>=5,<6",
+  "pillow>=12,<13",
+  "playwright>=1.58,<2",
+  "beautifulsoup4>=4.14,<5",
+  "httpcore>=1.0.9,<1.1",
+  "anyio>=4.8,<5",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3,<10",
+  "pytest-asyncio>=0.25,<2",
+  "pytest-cov>=6,<8",
+  "ruff>=0.11,<1",
+  "mypy>=1.15,<2",
+  "boto3-stubs[s3]>=1.40,<2",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/app", "/migrations", "/tests", "/scripts", "/docs", "/infrastructure", "/.github",
+  "/README.md", "/architecture.md", "/CONTRIBUTING.md", "/SECURITY.md",
+  "/LICENSE", "/THIRD_PARTY_NOTICES.md", "/CHANGELOG.md",
+  "/pyproject.toml", "/uv.lock", "/alembic.ini", "/Dockerfile", "/compose*.yml",
+  "/.dockerignore", "/.env.example", "/.gitattributes", "/.gitignore", "/.python-version",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["test-results", ".sakura"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["app"]
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-ra --strict-markers"
+markers = ["integration: requires real disposable PostgreSQL and Redis"]
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+source = ["app"]
+branch = true
