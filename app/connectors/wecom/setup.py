@@ -286,7 +286,7 @@ def private_output(path: Path) -> Iterator[IO[str]]:
                 0o600,
                 dir_fd=directory,
             )
-        else:
+        elif sys.platform == "win32":
             # Windows privacy is inherited from the operator-owned directory ACL.
             for parent in (*reversed(path.parents), path):
                 try:
@@ -300,6 +300,8 @@ def private_output(path: Path) -> Iterator[IO[str]]:
                 ):
                     raise SetupError("setup_output_symlink_forbidden")
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_BINARY, 0o600)
+        else:
+            raise SetupError("setup_output_platform_unsupported")
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise SetupError("setup_output_requires_regular_file")
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:

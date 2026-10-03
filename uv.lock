@@ -966,7 +966,7 @@ wheels = [
 
 [[package]]
 name = "wechat-knowledge-assistant"
-version = "0.100.1"
+version = "0.100.2"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
